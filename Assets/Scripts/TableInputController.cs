@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -18,10 +21,13 @@ namespace RotRise.Gameplay
         private const string PointerAction = "UI/Point";
         private const string ClickAction = "UI/Click";
         private const string MouseBindingGroup = "Keyboard&Mouse";
+        private const float DragThreshold = 4f;
         private InputAction point;
         private InputAction click;
-        private int draggedCardId;
+        private Predicate<int> canInteract;
+        private readonly List<TableBoard.TableCard> draggedCards = new();
         private Vector2 grabOffset;
+        private bool isDragging;
 
         // 모델 및 상태를 읽는 Inspector용 프로퍼티
         private TableBoard board;
@@ -29,7 +35,7 @@ namespace RotRise.Gameplay
         public int CurrentDay => board?.Day ?? 0;
         public float SearchProgress => board?.SearchProgress ?? 0f;
         public int SearchSlot => board == null ? 0 : board.SearchSlot + 1;
-        public int MaterialCount => board == null ? 0 : board.TableCards.Count - 1;
+        public int MaterialCount => board?.TableCards.Count(card => card.Material.HasValue) ?? 0;
 
 
         // Inspector에 표시할 레일 위치와 카드 식별자 조회
@@ -82,6 +88,7 @@ namespace RotRise.Gameplay
             point.bindingMask = InputBinding.MaskByGroup(MouseBindingGroup);
             click.bindingMask = InputBinding.MaskByGroup(MouseBindingGroup);
             board = new TableBoard(locationSequence, searchDuration, layout);
+            canInteract = view.CanInteractWithCard;
             view.RenderBoard(board);
         }
 
@@ -128,7 +135,7 @@ namespace RotRise.Gameplay
         // 창 밖에서 버튼이 해제되더라도 드래그 상태 정리
         private void OnApplicationFocus(bool hasFocus)
         {
-            if (!hasFocus && draggedCardId != 0)
+            if (!hasFocus && draggedCards.Count > 0)
             {
                 CancelDrag();
             }
@@ -138,28 +145,35 @@ namespace RotRise.Gameplay
         // 같은 프레임의 일차 입력을 수색 시간보다 먼저 처리
         private void Update()
         {
+            // 새 보상이 생성되기 전에 진행 중인 이동만 전진
+            view.AdvanceRewardScatter(Time.deltaTime);
+
             // 키 유지 중 재실행 없이 새 입력만 처리
             var keyboard = Keyboard.current;
+            var advancesDay = keyboard != null && keyboard.spaceKey.wasPressedThisFrame;
 
-            if (keyboard != null && keyboard.spaceKey.wasPressedThisFrame)
+            if (advancesDay)
             {
-                draggedCardId = 0;
+                draggedCards.Clear();
+                isDragging = false;
                 board.AdvanceDay();
                 view.RenderBoard(board);
             }
-            else
-            {
-                UpdatePointer();
-            }
 
-            // 진행 상황과 완료 결과를 서로 다른 빈도로 표시
-            if (board.TickSearch(Time.deltaTime))
+            // 보상 생성 후 같은 프레임의 드래그 화면 복원
+            if (board.TickSearch(Time.deltaTime, out var completedSlot))
             {
+                view.PlayRewardScatter(board.TableCards, completedSlot);
                 view.RenderBoard(board);
             }
             else if (board.SearchCitizenId != 0)
             {
                 view.RenderProgress(board.SearchProgress);
+            }
+
+            if (!advancesDay)
+            {
+                UpdatePointer();
             }
         }
 
@@ -169,7 +183,7 @@ namespace RotRise.Gameplay
         {
             var pressed = click.WasPressedThisFrame();
 
-            if (draggedCardId == 0 && !pressed)
+            if (draggedCards.Count == 0 && !pressed)
             {
                 return;
             }
@@ -177,30 +191,43 @@ namespace RotRise.Gameplay
             // 입력 좌표와 누른 지점의 카드 내부 상대 위치 저장
             var pointer = view.GetBoardPoint(point.ReadValue<Vector2>());
 
-            if (pressed && draggedCardId == 0)
+            if (pressed && draggedCards.Count == 0)
             {
-                draggedCardId = board.FindDraggableCard(pointer);
+                var cardId = board.FindDraggableCard(pointer, canInteract);
 
-                if (draggedCardId == 0)
+                if (cardId == 0)
                 {
                     return;
                 }
 
-                grabOffset = pointer - board.GetCardPosition(draggedCardId);
+                board.GetDragCards(cardId, draggedCards);
+                grabOffset = pointer - draggedCards[0].Position;
             }
 
+            // 짧은 클릭은 배치 변경 없이 종료
+            var first = draggedCards[0];
             var position = pointer - grabOffset;
+            var delta = position - first.Position;
+            isDragging |= delta.sqrMagnitude >= DragThreshold * DragThreshold;
 
             if (click.WasReleasedThisFrame())
             {
                 // 실패 포함 드롭 결과를 모델의 확정 배치로 복원
-                board.TryDrop(draggedCardId, pointer, position);
+                if (isDragging)
+                {
+                    board.TryDrop(draggedCards, pointer, position, canInteract);
+                }
+
                 CancelDrag();
                 return;
             }
 
-            var targetSlot = board.FindSearchTarget(draggedCardId, pointer);
-            view.RenderDrag(draggedCardId, position, targetSlot >= 0 ? targetSlot : board.SearchSlot);
+            if (isDragging)
+            {
+                var targetSlot = board.FindSearchTarget(first.Id, pointer);
+                var hasStackTarget = board.TryGetStackTarget(draggedCards, pointer, position, canInteract, out _, out var targetBounds);
+                view.RenderDrag(draggedCards, delta, targetSlot >= 0 ? targetSlot : board.SearchSlot, hasStackTarget ? targetBounds : null);
+            }
         }
 
 
@@ -208,9 +235,10 @@ namespace RotRise.Gameplay
         private void CancelDrag()
         {
             // 모델에는 드롭 전 위치가 그대로 유지
-            if (draggedCardId != 0)
+            if (draggedCards.Count > 0)
             {
-                draggedCardId = 0;
+                draggedCards.Clear();
+                isDragging = false;
                 view.RenderBoard(board);
             }
         }

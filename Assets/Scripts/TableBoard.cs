@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 
 namespace RotRise.Gameplay
@@ -10,7 +11,7 @@ namespace RotRise.Gameplay
     internal sealed class TableBoard
     {
         /// <summary>
-        /// 테이블 카드 한 장의 식별자와 마지막 배치 위치
+        /// 테이블 카드 한 장의 식별자와 확정 배치 및 더미 소속
         /// </summary>
         internal readonly struct TableCard
         {
@@ -18,15 +19,17 @@ namespace RotRise.Gameplay
             internal int Id { get; }
             internal MaterialKind? Material { get; }
             internal Vector2 Position { get; }
+            internal int StackId { get; }
 
 
             // 새 카드 또는 배치 변경 스냅샷 생성
-            internal TableCard(int id, MaterialKind? material, Vector2 position)
+            internal TableCard(int id, MaterialKind? material, Vector2 position, int stackId = 0)
             {
                 // 카드 식별자와 좌표 보존
                 Id = id;
                 Material = material;
                 Position = position;
+                StackId = stackId == 0 ? id : stackId;
             }
         }
 
@@ -69,15 +72,28 @@ namespace RotRise.Gameplay
             }
         }
 
-        // 테이블 카드와 일차 레일의 원본 상태
+        // 테이블 카드의 뒤에서 앞으로 그리는 순서와 일차 레일 원본
         private readonly List<TableCard> tableCards = new();
         private readonly LocationCard[] rail = new LocationCard[TableLayout.SlotCount];
         private readonly LocationDefinition[] locationSequence;
         private readonly TableLayout layout;
-        private int nextCardId = 1;
+        internal const int StartingCitizenId = 1;
+        private int nextCardId = StartingCitizenId;
         private int nextLocationIndex;
         internal int Day { get; private set; } = 1;
         internal IReadOnlyList<TableCard> TableCards { get; }
+
+        // 카드 더미의 세로 간격과 결합에 필요한 면적 비율
+        private const float StackStepRatio = 0.16f;
+        private const float MinimumOverlapAreaRatio = 0.12f;
+        private const float MinimumOverlapAxisRatio = 0.14f;
+        private const float CenterReachRatio = 0.62f;
+        private Vector2 StackStep => Vector2.up * (layout.CardSize.y * StackStepRatio);
+
+        // 장소 주변의 보상 착지 후보 탐색 범위
+        private const int RewardScatterAttempts = 48;
+        private const float RewardMinimumDistanceRatio = 0.8f;
+        private const float RewardMaximumDistanceRatio = 2.2f;
 
         // 진행 중 수색과 표시용 읽기 결과
         private readonly float searchDuration;
@@ -113,14 +129,14 @@ namespace RotRise.Gameplay
 
 
         // 포인터 아래에 있는 드래그 가능한 테이블 카드 조회
-        internal int FindDraggableCard(Vector2 pointer)
+        internal int FindDraggableCard(Vector2 pointer, Predicate<int> canInteract)
         {
-            // 마지막에 생성한 카드를 먼저 선택해 포화 상태의 카드 접근 유지
+            // 화면에서 앞에 그려지는 카드부터 선택
             for (var index = tableCards.Count - 1; index >= 0; index--)
             {
                 var card = tableCards[index];
 
-                if (card.Id != SearchCitizenId && new Rect(card.Position, layout.CardSize).Contains(pointer))
+                if (card.Id != SearchCitizenId && new Rect(card.Position, layout.CardSize).Contains(pointer) && canInteract(card.Id))
                 {
                     return card.Id;
                 }
@@ -130,10 +146,23 @@ namespace RotRise.Gameplay
         }
 
 
-        // 드래그 시작 위치를 얻기 위한 현재 카드 배치 조회
-        internal Vector2 GetCardPosition(int cardId)
+        // 집은 카드부터 같은 더미의 위쪽 카드까지 드래그 목록에 복사
+        internal void GetDragCards(int cardId, List<TableCard> cards)
         {
-            return tableCards[FindTableIndex(cardId)].Position;
+            // 확정 배치 순서를 임시 드래그에도 사용
+            cards.Clear();
+            var firstIndex = FindTableIndex(cardId);
+            var stackId = tableCards[firstIndex].StackId;
+
+            for (var index = firstIndex; index < tableCards.Count; index++)
+            {
+                var card = tableCards[index];
+
+                if (card.StackId == stackId)
+                {
+                    cards.Add(card);
+                }
+            }
         }
 
 
@@ -148,40 +177,228 @@ namespace RotRise.Gameplay
                 return -1;
             }
 
-            // 현재 공개 장소에만 수색 대상 연결
+            // 현재 공개 장소와 독립 시민 확인
             var slot = FindSlot(pointer);
-            return slot >= 0 && slot < TableLayout.PreviewSlot && rail[slot] != null ? slot : -1;
+            var card = tableCards[index];
+
+            if (slot < 0 || slot >= TableLayout.PreviewSlot || rail[slot] == null || card.StackId != card.Id)
+            {
+                return -1;
+            }
+
+            // 다른 카드를 받치고 있는 시민의 수색 제한
+            for (var next = index + 1; next < tableCards.Count; next++)
+            {
+                if (tableCards[next].StackId == cardId)
+                {
+                    return -1;
+                }
+            }
+
+            return slot;
         }
 
 
-        // 카드 드롭 요청을 수색 시작 또는 테이블 이동으로 확정
-        internal bool TryDrop(int cardId, Vector2 pointer, Vector2 position)
+        // 드롭 요청을 수색 또는 카드 더미 배치로 확정
+        internal bool TryDrop(IReadOnlyList<TableCard> draggedCards, Vector2 pointer, Vector2 position, Predicate<int> canInteract)
         {
-            // 없는 카드와 수색 중인 시민 이동 거절
-            var index = FindTableIndex(cardId);
-
-            if (index < 0 || cardId == SearchCitizenId)
-            {
-                return false;
-            }
-
-            // 슬롯 위 드롭은 장소 상호작용으로만 처리
-            var targetSlot = FindSearchTarget(cardId, pointer);
+            // 드래그 시작 카드의 확정 위치와 더미 소속 조회
+            var first = draggedCards[0];
+            var firstIndex = FindTableIndex(first.Id);
+            var targetSlot = FindSearchTarget(first.Id, pointer);
 
             if (targetSlot >= 0)
             {
-                search = new Search(cardId, rail[targetSlot]);
+                search = new Search(first.Id, rail[targetSlot]);
                 return true;
             }
 
-            // 허용되지 않은 슬롯과 테이블 충돌은 기존 위치 유지
-            if (FindSlot(pointer) >= 0 || !IsPlacementFree(position, cardId))
+            // 레일 위에서는 일반 카드 배치 금지
+            if (FindSlot(pointer) >= 0)
             {
                 return false;
             }
 
-            var card = tableCards[index];
-            tableCards[index] = new TableCard(card.Id, card.Material, position);
+            // 결합 대상의 바닥 위치를 기준으로 재료와 시민 순서 재배치
+            var hasTarget = TryGetStackTarget(draggedCards, pointer, position, canInteract, out var targetStackId, out var targetBounds);
+            var cardsToPlace = draggedCards;
+
+            if (hasTarget)
+            {
+                position = targetBounds.position;
+                cardsToPlace = MergeStackCards(targetStackId, firstIndex, draggedCards);
+            }
+            else if (!CanPlaceStack(new Rect(position, layout.CardSize + StackStep * (draggedCards.Count - 1)), firstIndex, 0))
+            {
+                return false;
+            }
+
+            // 배치 확정 후 원본에서 이동분과 대상 더미를 제거
+            for (var index = tableCards.Count - 1; index >= 0; index--)
+            {
+                var stackId = tableCards[index].StackId;
+
+                if (stackId == targetStackId || (index >= firstIndex && stackId == first.StackId))
+                {
+                    tableCards.RemoveAt(index);
+                }
+            }
+
+            // 새 바닥 카드의 식별자로 더미 소속과 그리기 순서 확정
+            var newStackId = cardsToPlace[0].Id;
+
+            for (var index = 0; index < cardsToPlace.Count; index++)
+            {
+                var card = cardsToPlace[index];
+                tableCards.Add(new TableCard(card.Id, card.Material, position + StackStep * index, newStackId));
+            }
+
+            return true;
+        }
+
+
+        // 대상 더미와 드래그 카드의 새 순서 계산
+        private List<TableCard> MergeStackCards(int targetStackId, int firstIndex, IReadOnlyList<TableCard> draggedCards)
+        {
+            // 같은 더미에 다시 놓을 때 이동 카드를 제외한 대상 카드 수집
+            var cards = new List<TableCard>();
+            var sourceStackId = tableCards[firstIndex].StackId;
+
+            for (var index = 0; index < tableCards.Count; index++)
+            {
+                var card = tableCards[index];
+
+                if (card.StackId == targetStackId && (targetStackId != sourceStackId || index < firstIndex))
+                {
+                    cards.Add(card);
+                }
+            }
+
+            // 같은 종류 안에서는 대상 다음에 이동 카드가 오도록 안정 정렬
+            cards.AddRange(draggedCards);
+            return cards.OrderBy(card => !card.Material.HasValue).ToList();
+        }
+
+
+        // 드롭과 강조에 공통으로 사용할 유효한 결합 대상 조회
+        internal bool TryGetStackTarget(IReadOnlyList<TableCard> draggedCards, Vector2 pointer, Vector2 position,
+            Predicate<int> canInteract, out int targetStackId, out Rect targetBounds)
+        {
+            // 레일 위에서는 수색 상호작용만 허용
+            targetStackId = 0;
+            targetBounds = default;
+
+            if (FindSlot(pointer) >= 0)
+            {
+                return false;
+            }
+
+            // 카드 단위의 접촉 면적과 중심 거리 비교 준비
+            var first = draggedCards[0];
+            var firstIndex = FindTableIndex(first.Id);
+            var cardSize = layout.CardSize;
+            var draggedBounds = new Rect(position, cardSize);
+            var bestDistance = float.PositiveInfinity;
+
+            for (var index = tableCards.Count - 1; index >= 0; index--)
+            {
+                var card = tableCards[index];
+
+                if ((index >= firstIndex && card.StackId == first.StackId) || card.Id == SearchCitizenId)
+                {
+                    continue;
+                }
+
+                // 한쪽 폭이나 면적이 작은 모서리 접촉 제외
+                var bounds = new Rect(card.Position, cardSize);
+                var width = Mathf.Min(bounds.xMax, draggedBounds.xMax) - Mathf.Max(bounds.xMin, draggedBounds.xMin);
+                var height = Mathf.Min(bounds.yMax, draggedBounds.yMax) - Mathf.Max(bounds.yMin, draggedBounds.yMin);
+
+                if (width < cardSize.x * MinimumOverlapAxisRatio || height < cardSize.y * MinimumOverlapAxisRatio ||
+                    width * height < cardSize.x * cardSize.y * MinimumOverlapAreaRatio)
+                {
+                    continue;
+                }
+
+                // 직접 가리키는 카드 우선, 그 외에는 가까운 중심부터 선택
+                var isPointedAt = bounds.Contains(pointer);
+                var delta = draggedBounds.center - bounds.center;
+                var offset = new Vector2(delta.x / cardSize.x, delta.y / cardSize.y);
+                var distance = offset.sqrMagnitude;
+
+                if ((!isPointedAt && (Mathf.Abs(offset.x) > CenterReachRatio || Mathf.Abs(offset.y) > CenterReachRatio ||
+                    distance >= bestDistance)) || !canInteract(card.Id))
+                {
+                    continue;
+                }
+
+                // 실제로 합친 영역이 들어가는 더미만 강조 대상으로 전달
+                var candidateBounds = GetTargetBounds(card.StackId, firstIndex);
+                var mergedBounds = new Rect(candidateBounds.position, candidateBounds.size + StackStep * draggedCards.Count);
+
+                if (!CanPlaceStack(mergedBounds, firstIndex, card.StackId))
+                {
+                    continue;
+                }
+
+                targetStackId = card.StackId;
+                targetBounds = candidateBounds;
+                bestDistance = distance;
+
+                if (isPointedAt)
+                {
+                    return true;
+                }
+            }
+
+            return targetStackId != 0;
+        }
+
+
+        // 드래그 중인 카드를 뺀 대상 더미의 표시 영역 조회
+        private Rect GetTargetBounds(int stackId, int firstMovingIndex)
+        {
+            // 확정 배치 순서에 연속된 같은 더미의 카드 수 확인
+            var baseIndex = FindTableIndex(stackId);
+            var count = 1;
+
+            for (var index = baseIndex + 1; index < tableCards.Count && tableCards[index].StackId == stackId; index++)
+            {
+                if (index == firstMovingIndex)
+                {
+                    break;
+                }
+
+                count++;
+            }
+
+            return new Rect(tableCards[baseIndex].Position, layout.CardSize + StackStep * (count - 1));
+        }
+
+
+        // 드롭 결과가 테이블과 다른 더미의 배치를 침범하는지 확인
+        private bool CanPlaceStack(Rect bounds, int firstMovingIndex, int targetStackId)
+        {
+            // 레일과 테이블 경계 검사
+            if (!IsTableArea(bounds))
+            {
+                return false;
+            }
+
+            // 움직이는 카드와 결합 대상의 기존 영역 제외
+            var sourceStackId = tableCards[firstMovingIndex].StackId;
+
+            for (var index = 0; index < tableCards.Count; index++)
+            {
+                var card = tableCards[index];
+                var isMoving = index >= firstMovingIndex && card.StackId == sourceStackId;
+
+                if (!isMoving && card.StackId != targetStackId && bounds.Overlaps(new Rect(card.Position, layout.CardSize)))
+                {
+                    return false;
+                }
+            }
+
             return true;
         }
 
@@ -202,10 +419,12 @@ namespace RotRise.Gameplay
         }
 
 
-        // 경과 시간 반영 후 수색 완료 상태 변경 결과 전달
-        internal bool TickSearch(float deltaTime)
+        // 경과 시간 반영 후 완료 시점의 장소 슬롯 전달
+        internal bool TickSearch(float deltaTime, out int completedSlot)
         {
             // 활성 수색만 전진
+            completedSlot = -1;
+
             if (search == null)
             {
                 return false;
@@ -219,13 +438,13 @@ namespace RotRise.Gameplay
             }
 
             // 현재 슬롯의 장소를 한 번 소모하고 수색 원본 해제
-            var slot = SearchSlot;
+            completedSlot = SearchSlot;
             var location = search.Location.Definition;
-            rail[slot] = null;
+            rail[completedSlot] = null;
             search = null;
 
             // 세 위치를 먼저 정하고 독립 추첨 결과를 별도 카드로 지급
-            var positions = PlanRewardPositions();
+            var positions = PlanRewardPositions(layout.GetLocationPosition(completedSlot));
 
             foreach (var position in positions)
             {
@@ -278,11 +497,10 @@ namespace RotRise.Gameplay
         }
 
 
-        // 테이블 경계와 다른 카드의 배치를 고려한 빈자리 판정
-        private bool IsPlacementFree(Vector2 position, int ignoredCardId, IReadOnlyList<Vector2> planned = null)
+        // 카드 배치 전체가 테이블의 레일 바깥에 들어오는지 확인
+        private bool IsTableArea(Rect bounds)
         {
-            // 카드 전체가 테이블 안에 있어야 이동 가능
-            var bounds = new Rect(position, layout.CardSize);
+            // 테이블 경계와 예약된 레일 영역 확인
             var board = layout.BoardSize;
 
             if (bounds.xMin < 0f || bounds.yMin < 0f || bounds.xMax > board.x || bounds.yMax > board.y)
@@ -298,23 +516,35 @@ namespace RotRise.Gameplay
                 }
             }
 
+            return true;
+        }
+
+
+        // 보상용 빈자리와 이번 보상 묶음의 예약 위치 확인
+        private bool IsPlacementFree(Vector2 position, IReadOnlyList<Vector2> planned)
+        {
+            // 테이블과 레일 경계 규칙 공유
+            var bounds = new Rect(position, layout.CardSize);
+
+            if (!IsTableArea(bounds))
+            {
+                return false;
+            }
+
             // 수색에 투입된 시민의 복귀 위치도 사용 중인 자리로 취급
             foreach (var card in tableCards)
             {
-                if (card.Id != ignoredCardId && bounds.Overlaps(new Rect(card.Position, layout.CardSize)))
+                if (bounds.Overlaps(new Rect(card.Position, layout.CardSize)))
                 {
                     return false;
                 }
             }
 
-            if (planned != null)
+            foreach (var reserved in planned)
             {
-                foreach (var reserved in planned)
+                if (bounds.Overlaps(new Rect(reserved, layout.CardSize)))
                 {
-                    if (bounds.Overlaps(new Rect(reserved, layout.CardSize)))
-                    {
-                        return false;
-                    }
+                    return false;
                 }
             }
 
@@ -323,45 +553,48 @@ namespace RotRise.Gameplay
 
 
         // 보상 한 묶음에 사용할 겹치지 않는 좌표 선택
-        private Vector2[] PlanRewardPositions()
+        private List<Vector2> PlanRewardPositions(Vector2 origin)
         {
-            var positions = new Vector2[TableLayout.RewardCount];
-            var planned = new List<Vector2>(positions.Length);
+            // 앞서 정한 카드의 착지 위치를 다음 후보 판정에 반영
+            var planned = new List<Vector2>(TableLayout.RewardCount);
 
-            for (var index = 0; index < positions.Length; index++)
+            for (var index = 0; index < TableLayout.RewardCount; index++)
             {
-                // 기본 위치를 우선하고 차 있으면 가까운 빈 후보 탐색
-                var preferred = layout.GetRewardPosition(index);
-
-                if (!TryFindRewardPosition(preferred, planned, out positions[index]))
+                // 주변과 테이블에 빈자리가 부족할 때도 남은 보상 지급
+                if (!TryFindRewardPosition(origin, planned, out var position))
                 {
-                    // 여유 공간 부족 시 세 장을 우측 기본 위치에 올려 지급 유지
-                    for (var fallback = 0; fallback < positions.Length; fallback++)
-                    {
-                        positions[fallback] = layout.GetRewardPosition(fallback);
-                    }
-
-                    return positions;
+                    position = layout.GetRewardPosition(index);
                 }
 
-                planned.Add(positions[index]);
+                planned.Add(position);
             }
 
-            return positions;
+            return planned;
         }
 
 
-        // 보상 기본 좌표와 가장 가까운 빈 후보 판정
-        private bool TryFindRewardPosition(Vector2 preferred, IReadOnlyList<Vector2> planned, out Vector2 position)
+        // 장소 주변의 무작위 빈자리 또는 가장 가까운 격자 후보 선택
+        private bool TryFindRewardPosition(Vector2 origin, IReadOnlyList<Vector2> planned, out Vector2 position)
         {
-            position = preferred;
+            // 카드 규격에 비례하는 범위에서 방향과 거리를 독립 추첨
+            var minDistance = layout.CardSize.y * RewardMinimumDistanceRatio;
+            var maxDistance = layout.CardSize.y * RewardMaximumDistanceRatio;
 
-            if (IsPlacementFree(preferred, 0, planned))
+            for (var attempt = 0; attempt < RewardScatterAttempts; attempt++)
             {
-                return true;
+                var angle = UnityEngine.Random.Range(0f, 2f * Mathf.PI);
+                var direction = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
+                var candidate = origin + direction * UnityEngine.Random.Range(minDistance, maxDistance);
+
+                if (IsPlacementFree(candidate, planned))
+                {
+                    position = candidate;
+                    return true;
+                }
             }
 
-            // 희소한 보상 생성 시점에만 대체 위치 탐색
+            // 가까운 후보가 막힌 경우에만 더 넓은 테이블에서 빈자리 탐색
+            position = default;
             var bestDistance = float.PositiveInfinity;
 
             for (var row = 0; row < TableLayout.RewardGridRows; row++)
@@ -369,9 +602,9 @@ namespace RotRise.Gameplay
                 for (var column = 0; column < TableLayout.RewardGridColumns; column++)
                 {
                     var candidate = TableLayout.GetRewardGridPosition(column, row);
-                    var distance = (candidate - preferred).sqrMagnitude;
+                    var distance = (candidate - origin).sqrMagnitude;
 
-                    if (distance < bestDistance && IsPlacementFree(candidate, 0, planned))
+                    if (distance < bestDistance && IsPlacementFree(candidate, planned))
                     {
                         bestDistance = distance;
                         position = candidate;
