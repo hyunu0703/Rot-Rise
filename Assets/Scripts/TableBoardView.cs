@@ -96,6 +96,7 @@ namespace RotRise.Gameplay
 
         // 더미 합치기 직후 화면 안착
         private const float StackSnapDuration = 0.1f;
+        private const float DropReboundDuration = 0.24f;
         private readonly List<CardMotion> stackMotions = new();
 
 
@@ -290,7 +291,7 @@ namespace RotRise.Gameplay
 
         // 놓은 위치와 기존 더미의 화면 위치에서 확정 슬롯까지 이동 시작
         internal void PlayStackSnap(TableBoard board, int stackId,
-            IReadOnlyList<TableBoard.TableCard> draggedCards, Vector2 releaseDelta)
+            IReadOnlyList<TableBoard.TableCard> draggedCards, Vector2 releaseDelta, bool rebounded)
         {
             // 마지막 드래그 표시와 같은 계산으로 놓는 프레임의 좌표 적용
             foreach (var card in draggedCards)
@@ -315,8 +316,24 @@ namespace RotRise.Gameplay
 
                 if (origin != card.Position)
                 {
-                    stackMotions.Add(new CardMotion(card.Id, image, origin, card.Position, StackSnapDuration));
+                    var duration = rebounded ? DropReboundDuration : StackSnapDuration;
+                    stackMotions.Add(new CardMotion(card.Id, image, origin, card.Position, duration));
                 }
+            }
+        }
+
+
+        // 빈자리가 없거나 레일에서 거절된 카드를 원래 위치로 복귀
+        internal void PlayDropReturn(TableBoard board, IReadOnlyList<TableBoard.TableCard> draggedCards, Vector2 releaseDelta)
+        {
+            // 릴리스 좌표에서 모델의 기존 배치까지 화면 이동 예약
+            foreach (var card in draggedCards)
+            {
+                var image = tableCardImages[card.Id].rectTransform;
+                var destination = card.Id == board.SearchCitizenId ? board.GetSearchCitizenPosition() : card.Position;
+                var origin = card.Position + releaseDelta;
+                SetPosition(image, origin);
+                stackMotions.Add(new CardMotion(card.Id, image, origin, destination, DropReboundDuration));
             }
         }
 

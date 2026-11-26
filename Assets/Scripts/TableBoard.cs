@@ -85,9 +85,11 @@ namespace RotRise.Gameplay
 
         // 카드 더미의 세로 간격과 결합에 필요한 면적 비율
         private const float StackStepRatio = 0.16f;
+        private const float ReboundGap = 12f;
         private const float MinimumOverlapAreaRatio = 0.12f;
         private const float MinimumOverlapAxisRatio = 0.14f;
         private const float CenterReachRatio = 0.62f;
+        private const float MergePlacementClearance = 0.01f;
         private Vector2 StackStep => Vector2.up * (layout.CardSize.y * StackStepRatio);
 
         // 장소 주변의 보상 착지 후보 탐색 범위
@@ -209,10 +211,11 @@ namespace RotRise.Gameplay
 
         // 드롭을 확정하고 합친 경우 최종 더미 식별자 전달
         internal bool TryDrop(IReadOnlyList<TableCard> draggedCards, Vector2 pointer, Vector2 position,
-            Predicate<int> canInteract, out int mergedStackId)
+            Predicate<int> canInteract, out int movedStackId, out bool rebounded)
         {
             // 드래그 시작 카드의 확정 위치와 더미 소속 조회
-            mergedStackId = 0;
+            movedStackId = 0;
+            rebounded = false;
             var first = draggedCards[0];
             var firstIndex = FindTableIndex(first.Id);
             var targetSlot = FindSearchTarget(draggedCards, pointer);
@@ -230,17 +233,28 @@ namespace RotRise.Gameplay
             }
 
             // 결합 대상의 바닥 위치를 기준으로 재료와 시민 순서 재배치
-            var hasTarget = TryGetStackTarget(draggedCards, pointer, position, canInteract, out var targetStackId, out var targetBounds);
+            var hasTarget = TryGetStackTarget(draggedCards, pointer, position, canInteract, out var targetStackId,
+                out _, out var mergePosition);
             var cardsToPlace = draggedCards;
 
             if (hasTarget)
             {
-                position = targetBounds.position;
+                position = mergePosition;
                 cardsToPlace = MergeStackCards(targetStackId, firstIndex, draggedCards);
             }
-            else if (!CanPlaceStack(new Rect(position, layout.CardSize + StackStep * (draggedCards.Count - 1)), firstIndex, 0))
+            else
             {
-                return false;
+                var draggedBounds = new Rect(position, layout.CardSize + StackStep * (draggedCards.Count - 1));
+
+                if (!CanPlaceStack(draggedBounds, firstIndex, 0))
+                {
+                    rebounded = TryGetReboundPosition(draggedBounds, firstIndex, out position);
+
+                    if (!rebounded)
+                    {
+                        return false;
+                    }
+                }
             }
 
             // 수색 시민을 유효한 테이블 위치에 놓으면 장소에 진행 시간 보존
@@ -269,8 +283,52 @@ namespace RotRise.Gameplay
                 tableCards.Add(new TableCard(card.Id, card.Material, position + StackStep * index, newStackId));
             }
 
-            mergedStackId = hasTarget ? newStackId : 0;
+            movedStackId = hasTarget || rebounded ? newStackId : 0;
             return true;
+        }
+
+
+        // 겹친 더미 바깥에서 놓은 지점과 가장 가까운 빈자리 조회
+        private bool TryGetReboundPosition(Rect draggedBounds, int firstMovingIndex, out Vector2 position)
+        {
+            position = default;
+            var sourceStackId = tableCards[firstMovingIndex].StackId;
+            var bestDistance = float.PositiveInfinity;
+
+            // 수색 중인 시민의 복귀 영역과 드래그 중인 카드 제외
+            for (var index = 0; index < tableCards.Count; index++)
+            {
+                var card = tableCards[index];
+
+                if (card.Id == SearchCitizenId || (index >= firstMovingIndex && card.StackId == sourceStackId) ||
+                    !draggedBounds.Overlaps(new Rect(card.Position, layout.CardSize)))
+                {
+                    continue;
+                }
+
+                // 겹친 카드 한 장 대신 더미 전체의 네 면 기준으로 분리
+                var obstacle = GetTargetBounds(card.StackId, firstMovingIndex);
+
+                for (var side = 0; side < 4; side++)
+                {
+                    var candidate = side switch
+                    {
+                        0 => new Vector2(obstacle.xMin - draggedBounds.width - ReboundGap, draggedBounds.y),
+                        1 => new Vector2(obstacle.xMax + ReboundGap, draggedBounds.y),
+                        2 => new Vector2(draggedBounds.x, obstacle.yMin - draggedBounds.height - ReboundGap),
+                        _ => new Vector2(draggedBounds.x, obstacle.yMax + ReboundGap)
+                    };
+                    var distance = (candidate - draggedBounds.position).sqrMagnitude;
+
+                    if (distance < bestDistance && CanPlaceStack(new Rect(candidate, draggedBounds.size), firstMovingIndex, 0))
+                    {
+                        position = candidate;
+                        bestDistance = distance;
+                    }
+                }
+            }
+
+            return float.IsFinite(bestDistance);
         }
 
 
@@ -299,23 +357,30 @@ namespace RotRise.Gameplay
 
         // 드롭과 강조에 공통으로 사용할 유효한 결합 대상 조회
         internal bool TryGetStackTarget(IReadOnlyList<TableCard> draggedCards, Vector2 pointer, Vector2 position,
-            Predicate<int> canInteract, out int targetStackId, out Rect targetBounds)
+            Predicate<int> canInteract, out int targetStackId, out Rect targetBounds, out Vector2 mergePosition)
         {
             // 레일 위에서는 수색 상호작용만 허용
             targetStackId = 0;
             targetBounds = default;
+            mergePosition = default;
 
             if (FindSlot(pointer) >= 0)
             {
                 return false;
             }
 
-            // 카드 단위의 접촉 면적과 중심 거리 비교 준비
+            // 드래그한 더미 전체의 접촉 영역과 기준 카드 크기 계산
             var first = draggedCards[0];
             var firstIndex = FindTableIndex(first.Id);
             var cardSize = layout.CardSize;
-            var draggedBounds = new Rect(position, cardSize);
+            var draggedSpan = StackStep * (draggedCards.Count - 1);
+            var draggedBounds = new Rect(position, cardSize + draggedSpan);
+            var firstCenter = position + cardSize * 0.5f;
             var bestDistance = float.PositiveInfinity;
+            var checkedStackId = 0;
+            var checkedBounds = default(Rect);
+            var checkedPosition = default(Vector2);
+            var canMergeCheckedStack = false;
 
             for (var index = tableCards.Count - 1; index >= 0; index--)
             {
@@ -339,27 +404,36 @@ namespace RotRise.Gameplay
 
                 // 직접 가리키는 카드 우선, 그 외에는 가까운 중심부터 선택
                 var isPointedAt = bounds.Contains(pointer);
-                var delta = draggedBounds.center - bounds.center;
+                var nearestCenterY = Mathf.Clamp(bounds.center.y, firstCenter.y, firstCenter.y + draggedSpan.y);
+                var delta = new Vector2(firstCenter.x - bounds.center.x, nearestCenterY - bounds.center.y);
                 var offset = new Vector2(delta.x / cardSize.x, delta.y / cardSize.y);
                 var distance = offset.sqrMagnitude;
 
-                if ((!isPointedAt && (Mathf.Abs(offset.x) > CenterReachRatio || Mathf.Abs(offset.y) > CenterReachRatio ||
-                    distance >= bestDistance)) || !canInteract(card.Id))
+                var isBeyondSingleCardReach = draggedCards.Count == 1 &&
+                    (Mathf.Abs(offset.x) > CenterReachRatio || Mathf.Abs(offset.y) > CenterReachRatio);
+
+                if ((!isPointedAt && (isBeyondSingleCardReach || distance >= bestDistance)) || !canInteract(card.Id))
                 {
                     continue;
                 }
 
-                // 실제로 합친 영역이 들어가는 더미만 강조 대상으로 전달
-                var candidateBounds = GetTargetBounds(card.StackId, firstIndex);
-                var mergedBounds = new Rect(candidateBounds.position, candidateBounds.size + StackStep * draggedCards.Count);
+                // 연속된 같은 더미의 합치기 자리 탐색 결과 재사용
+                if (checkedStackId != card.StackId)
+                {
+                    checkedStackId = card.StackId;
+                    checkedBounds = GetTargetBounds(card.StackId, firstIndex);
+                    var mergedBounds = new Rect(checkedBounds.position, checkedBounds.size + StackStep * draggedCards.Count);
+                    canMergeCheckedStack = TryGetMergePosition(mergedBounds, firstIndex, card.StackId, out checkedPosition);
+                }
 
-                if (!CanPlaceStack(mergedBounds, firstIndex, card.StackId))
+                if (!canMergeCheckedStack)
                 {
                     continue;
                 }
 
                 targetStackId = card.StackId;
-                targetBounds = candidateBounds;
+                targetBounds = checkedBounds;
+                mergePosition = checkedPosition;
                 bestDistance = distance;
 
                 if (isPointedAt)
@@ -369,6 +443,83 @@ namespace RotRise.Gameplay
             }
 
             return targetStackId != 0;
+        }
+
+
+        // 대상 위치와 가장 가까운 유효 합치기 좌표 조회
+        private bool TryGetMergePosition(Rect bounds, int firstMovingIndex, int targetStackId, out Vector2 position)
+        {
+            // 기존 더미 위치를 우선 사용하고 테이블보다 큰 결과 제외
+            position = bounds.position;
+
+            if (CanPlaceStack(bounds, firstMovingIndex, targetStackId))
+            {
+                return true;
+            }
+
+            var maxPosition = layout.BoardSize - bounds.size;
+
+            if (maxPosition.x < 0f || maxPosition.y < 0f)
+            {
+                return false;
+            }
+
+            var clampedPosition = Vector2.Min(Vector2.Max(bounds.position, Vector2.zero), maxPosition);
+
+            if (CanPlaceStack(new Rect(clampedPosition, bounds.size), firstMovingIndex, targetStackId))
+            {
+                position = clampedPosition;
+                return true;
+            }
+
+            // 테이블 경계와 장애물에 맞닿는 좌표에서 빈자리 탐색
+            var horizontal = new HashSet<float> { 0f, maxPosition.x, clampedPosition.x };
+            var vertical = new HashSet<float> { 0f, maxPosition.y, clampedPosition.y };
+
+            for (var slot = 0; slot < TableLayout.SlotCount; slot++)
+            {
+                AddMergeCoordinates(layout.GetSlotBounds(slot));
+            }
+
+            var sourceStackId = tableCards[firstMovingIndex].StackId;
+
+            for (var index = 0; index < tableCards.Count; index++)
+            {
+                var card = tableCards[index];
+
+                if (card.StackId != targetStackId && (index < firstMovingIndex || card.StackId != sourceStackId))
+                {
+                    AddMergeCoordinates(new Rect(card.Position, layout.CardSize));
+                }
+            }
+
+            var bestDistance = float.PositiveInfinity;
+
+            foreach (var x in horizontal)
+            {
+                foreach (var y in vertical)
+                {
+                    var candidate = new Vector2(x, y);
+                    var distance = (candidate - bounds.position).sqrMagnitude;
+
+                    if (distance < bestDistance && CanPlaceStack(new Rect(candidate, bounds.size), firstMovingIndex, targetStackId))
+                    {
+                        bestDistance = distance;
+                        position = candidate;
+                    }
+                }
+            }
+
+            return float.IsFinite(bestDistance);
+
+            // 장애물 네 면 밖에 놓을 수 있는 좌표 후보 추가
+            void AddMergeCoordinates(Rect obstacle)
+            {
+                horizontal.Add(Mathf.Clamp(obstacle.xMin - bounds.width - MergePlacementClearance, 0f, maxPosition.x));
+                horizontal.Add(Mathf.Clamp(obstacle.xMax + MergePlacementClearance, 0f, maxPosition.x));
+                vertical.Add(Mathf.Clamp(obstacle.yMin - bounds.height - MergePlacementClearance, 0f, maxPosition.y));
+                vertical.Add(Mathf.Clamp(obstacle.yMax + MergePlacementClearance, 0f, maxPosition.y));
+            }
         }
 
 

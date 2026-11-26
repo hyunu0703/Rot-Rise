@@ -223,11 +223,20 @@ namespace RotRise.Gameplay
 
             if (click.WasReleasedThisFrame())
             {
-                // 합치기 성공 시에만 놓은 좌표에서 확정 슬롯으로 이동
-                if (isDragging && board.TryDrop(draggedCards, pointer, position, canInteract, out var mergedStackId) &&
-                    mergedStackId != 0)
+                // 드롭 결과에 따라 합치기, 튕김 또는 원래 자리 복귀 연출 적용
+                if (isDragging)
                 {
-                    view.PlayStackSnap(board, mergedStackId, draggedCards, delta);
+                    var placed = board.TryDrop(draggedCards, pointer, position, canInteract, out var movedStackId,
+                        out var rebounded);
+
+                    if (!placed)
+                    {
+                        view.PlayDropReturn(board, draggedCards, delta);
+                    }
+                    else if (movedStackId != 0)
+                    {
+                        view.PlayStackSnap(board, movedStackId, draggedCards, delta, rebounded);
+                    }
                 }
 
                 CancelDrag();
@@ -242,7 +251,8 @@ namespace RotRise.Gameplay
             var position = pointer - grabOffset;
             var delta = position - draggedCards[0].Position;
             var targetSlot = board.FindSearchTarget(draggedCards, pointer);
-            var hasStackTarget = board.TryGetStackTarget(draggedCards, pointer, position, canInteract, out _, out var targetBounds);
+            var hasStackTarget = board.TryGetStackTarget(draggedCards, pointer, position, canInteract, out _,
+                out var targetBounds, out _);
             var stationaryCitizenId = isMovingSearcher ? 0 : board.SearchCitizenId;
             view.RenderDrag(draggedCards, delta, targetSlot >= 0 ? targetSlot : board.SearchSlot,
                 hasStackTarget ? targetBounds : null, stationaryCitizenId);
