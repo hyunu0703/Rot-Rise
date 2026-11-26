@@ -15,7 +15,7 @@ namespace RotRise.Gameplay
         [System.Serializable]
         private struct MaterialAppearance
         {
-            // 재료 식별자와 글자를 포함한 카드 원화
+            // 재료 식별자와 제목이 비어 있는 카드 원화
             [SerializeField] private MaterialKind material;
             [SerializeField] private Texture2D art;
             internal MaterialKind Material => material;
@@ -62,6 +62,16 @@ namespace RotRise.Gameplay
         [SerializeField] private RawImage rewardCardPrefab;
         [SerializeField] private MaterialAppearance[] materialAppearance;
 
+        // 카드 상단 띠에 표시할 이름과 한국어 서체
+        [SerializeField] private Font cardTitleFont;
+        private const float CardTitleBandRatio = 0.16f;
+        private const float CardTitleSideInset = 8f;
+        private const int CardTitleMinSize = 11;
+        private const int CardTitleMaxSize = 20;
+        private static readonly Color CardTitleColor = new(1f, 0.96f, 0.88f, 1f);
+        private const float PreviewOpacity = 0.68f;
+        private Text[] locationTitles;
+
         // 수색 및 일차 표시
         [SerializeField] private RectTransform searchTrack;
         [SerializeField] private RectTransform searchFill;
@@ -99,7 +109,8 @@ namespace RotRise.Gameplay
                 rewardCardPrefab == null || searchTrack == null || searchFill == null || dayNumber == null ||
                 slotFrames == null || slotFrames.Length != TableLayout.SlotCount ||
                 locationCards == null || locationCards.Length != TableLayout.SlotCount ||
-                rewardAnchors == null || rewardAnchors.Length != TableLayout.RewardCount || materialAppearance == null)
+                rewardAnchors == null || rewardAnchors.Length != TableLayout.RewardCount || materialAppearance == null ||
+                cardTitleFont == null || citizenCard.texture == null)
             {
                 return false;
             }
@@ -156,6 +167,21 @@ namespace RotRise.Gameplay
             // 화면과 드롭 판정에 동일한 편집 모드 좌표 사용
             var citizen = citizenCard.rectTransform;
             layout = new TableLayout(table.rect.size, citizen.rect.size, GetTablePosition(citizen), bounds, locations, rewards);
+
+            // 레일과 시민 카드에 재사용할 이름 표시 생성
+            locationTitles = new Text[locationCards.Length];
+
+            for (var slot = 0; slot < locationCards.Length; slot++)
+            {
+                locationTitles[slot] = CreateCardTitle(locationCards[slot]);
+            }
+
+            var previewCard = locationCards[TableLayout.PreviewSlot];
+            var previewColor = previewCard.color;
+            previewColor.a = PreviewOpacity;
+            previewCard.color = previewColor;
+            CreateCardTitle(citizenCard).text = citizenCard.texture.name;
+
             tableLayout = layout;
             return true;
         }
@@ -193,6 +219,7 @@ namespace RotRise.Gameplay
                 if (location != null)
                 {
                     card.texture = slot == TableLayout.PreviewSlot ? location.Definition.PreviewArt : location.Definition.CardArt;
+                    locationTitles[slot].text = location.Definition.DisplayName;
                 }
             }
 
@@ -377,6 +404,7 @@ namespace RotRise.Gameplay
                 image = Instantiate(rewardCardPrefab, cardLayer, false);
                 image.texture = materialArt[card.Material.Value];
                 image.name = $"{card.Material.Value} {card.Id}";
+                CreateCardTitle(image).text = image.texture.name;
             }
             else
             {
@@ -387,6 +415,32 @@ namespace RotRise.Gameplay
             // 카드 선택과 드래그에 사용할 식별자 등록
             tableCardImages.Add(card.Id, image);
             return image;
+        }
+
+
+        // 카드 이미지와 함께 이동하는 상단 제목 생성
+        private Text CreateCardTitle(RawImage card)
+        {
+            // 더미에서 드러나는 상단 영역에 이름 배치
+            var titleObject = new GameObject("Card Title", typeof(RectTransform), typeof(Text));
+            var title = titleObject.GetComponent<Text>();
+            var rect = title.rectTransform;
+            rect.SetParent(card.rectTransform, false);
+            rect.anchorMin = new Vector2(0f, 1f - CardTitleBandRatio);
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = new Vector2(CardTitleSideInset, 0f);
+            rect.offsetMax = new Vector2(-CardTitleSideInset, 0f);
+
+            // 긴 이름 자동 축소와 카드 입력 통과 설정
+            title.font = cardTitleFont;
+            title.color = CardTitleColor;
+            title.alignment = TextAnchor.MiddleCenter;
+            title.supportRichText = false;
+            title.raycastTarget = false;
+            title.resizeTextForBestFit = true;
+            title.resizeTextMinSize = CardTitleMinSize;
+            title.resizeTextMaxSize = CardTitleMaxSize;
+            return title;
         }
 
 

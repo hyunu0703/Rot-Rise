@@ -400,8 +400,8 @@ MonoBehaviour:
   view: {fileID: 1823000273}
   locationSequence:
   - displayName: 주택가
-    cardArt: {fileID: 2800000, guid: 921e8d0e047f4cfd8bc5b009338b7d21, type: 3}
-    previewArt: {fileID: 2800000, guid: 0a26b1f2cf7b4ef7a6143d2d4722b3ee, type: 3}
+    cardArt: {fileID: 2800000, guid: 4a7f73ca18084eedb77588c88e48e198, type: 3}
+    previewArt: {fileID: 2800000, guid: 4a7f73ca18084eedb77588c88e48e198, type: 3}
     rewards:
     - material: 0
       weight: 30
@@ -416,8 +416,8 @@ MonoBehaviour:
     - material: 6
       weight: 2
   - displayName: 공사장
-    cardArt: {fileID: 2800000, guid: 5d1670fe38f74133a1a2ec5d8acbece7, type: 3}
-    previewArt: {fileID: 2800000, guid: fbf51d50470c4c9e8e6aee1595495c5d, type: 3}
+    cardArt: {fileID: 2800000, guid: d27122d1df274f01958093db0f2061cb, type: 3}
+    previewArt: {fileID: 2800000, guid: d27122d1df274f01958093db0f2061cb, type: 3}
     rewards:
     - material: 0
       weight: 30
@@ -464,23 +464,24 @@ MonoBehaviour:
   rewardCardPrefab: {fileID: 1823000004, guid: 5f5895d4f378458aafb8a040bbcd0538, type: 3}
   materialAppearance:
   - material: 0
-    art: {fileID: 2800000, guid: 9bea9256ba5b4a17ac91cd6d542bb0b9, type: 3}
+    art: {fileID: 2800000, guid: 46baf8db8e9045f8b858794b62cce460, type: 3}
   - material: 1
-    art: {fileID: 2800000, guid: a4f44b1308d8485b972cddcd0ef294e5, type: 3}
+    art: {fileID: 2800000, guid: 574b3ea0666b4a498825299a88250d88, type: 3}
   - material: 2
-    art: {fileID: 2800000, guid: a6c958b739d742c0a1940fca2515dfcf, type: 3}
+    art: {fileID: 2800000, guid: 5e1033de286145048549749b55c8ca6e, type: 3}
   - material: 3
-    art: {fileID: 2800000, guid: 99955a9e1f4341f7957f01c15128782b, type: 3}
+    art: {fileID: 2800000, guid: c1ef80e01ec14359b5de24387be229e1, type: 3}
   - material: 4
-    art: {fileID: 2800000, guid: eddf9fd4e4ea4107a96e40cdba9ffcc8, type: 3}
+    art: {fileID: 2800000, guid: a6cf28abcd6a412ea82153d3942538a1, type: 3}
   - material: 5
-    art: {fileID: 2800000, guid: aa501d575b5244fe99f5a9afe40e64a2, type: 3}
+    art: {fileID: 2800000, guid: ce3ff42a5dd946528f0bfca7c9b520a7, type: 3}
   - material: 6
-    art: {fileID: 2800000, guid: 06afc7d674ef414eb8ec5e3816f2ee7c, type: 3}
+    art: {fileID: 2800000, guid: 020f454e9ebf41ae9a89ce819a408ac9, type: 3}
   - material: 7
-    art: {fileID: 2800000, guid: 3951319d00a94597a06cb232cce91105, type: 3}
+    art: {fileID: 2800000, guid: d08fc9efbab2458999cef5fd165fc6d0, type: 3}
   - material: 8
-    art: {fileID: 2800000, guid: 235512c3aa314bd3b0ee741e6fba38f2, type: 3}
+    art: {fileID: 2800000, guid: 9b0ce3fb065344a59f28d7e6e7defb77, type: 3}
+  cardTitleFont: {fileID: 12800000, guid: f83ddeabf9f940f2bd268b494dff7e8b, type: 3}
   searchTrack: {fileID: 1823000262}
   searchFill: {fileID: 1823000266}
   dayNumber: {fileID: 1823000024}
@@ -1273,7 +1274,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_Texture: {fileID: 2800000, guid: 921e8d0e047f4cfd8bc5b009338b7d21, type: 3}
+  m_Texture: {fileID: 2800000, guid: 4a7f73ca18084eedb77588c88e48e198, type: 3}
   m_UVRect:
     serializedVersion: 2
     x: 0
@@ -1491,7 +1492,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_Texture: {fileID: 2800000, guid: 5d1670fe38f74133a1a2ec5d8acbece7, type: 3}
+  m_Texture: {fileID: 2800000, guid: d27122d1df274f01958093db0f2061cb, type: 3}
   m_UVRect:
     serializedVersion: 2
     x: 0
@@ -1709,7 +1710,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_Texture: {fileID: 2800000, guid: 921e8d0e047f4cfd8bc5b009338b7d21, type: 3}
+  m_Texture: {fileID: 2800000, guid: 4a7f73ca18084eedb77588c88e48e198, type: 3}
   m_UVRect:
     serializedVersion: 2
     x: 0
@@ -1854,7 +1855,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_Texture: {fileID: 2800000, guid: fbf51d50470c4c9e8e6aee1595495c5d, type: 3}
+  m_Texture: {fileID: 2800000, guid: d27122d1df274f01958093db0f2061cb, type: 3}
   m_UVRect:
     serializedVersion: 2
     x: 0
@@ -2105,7 +2106,7 @@ MonoBehaviour:
   m_OnCullStateChanged:
     m_PersistentCalls:
       m_Calls: []
-  m_Texture: {fileID: 2800000, guid: bb2a26ce1f7e4d0ca4834fd23358fbf2, type: 3}
+  m_Texture: {fileID: 2800000, guid: 429c8e7942b043489daa14607d7cee86, type: 3}
   m_UVRect:
     serializedVersion: 2
     x: 0
