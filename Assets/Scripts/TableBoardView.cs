@@ -23,9 +23,9 @@ namespace RotRise.Gameplay
         }
 
         /// <summary>
-        /// 장소에서 착지점까지 움직이는 보상 카드의 화면 상태
+        /// 확정된 목적지까지 움직이는 카드의 화면 상태
         /// </summary>
-        private sealed class RewardMotion
+        private sealed class CardMotion
         {
             // 이동 대상과 출발 위치 및 모델의 착지 좌표
             internal int CardId { get; }
@@ -36,8 +36,8 @@ namespace RotRise.Gameplay
             internal float Elapsed { get; set; }
 
 
-            // 보상 배치에서 이번 이동의 양 끝과 시간을 기록
-            internal RewardMotion(int cardId, RectTransform image, Vector2 origin, Vector2 destination, float duration)
+            // 화면 이동의 시작 위치와 확정 위치 및 시간 저장
+            internal CardMotion(int cardId, RectTransform image, Vector2 origin, Vector2 destination, float duration)
             {
                 // 모델의 착지 좌표와 화면 표시 대상 연결
                 CardId = cardId;
@@ -82,7 +82,11 @@ namespace RotRise.Gameplay
         private const float RewardTravelDuration = 0.48f;
         private const float RewardTravelInterval = 0.06f;
         private const float RewardArcHeight = 20f;
-        private readonly List<RewardMotion> rewardMotions = new();
+        private readonly List<CardMotion> rewardMotions = new();
+
+        // 더미 합치기 직후 화면 안착
+        private const float StackSnapDuration = 0.1f;
+        private readonly List<CardMotion> stackMotions = new();
 
 
         // 씬 참조 검증과 테이블 좌표 스냅샷 생성
@@ -199,11 +203,11 @@ namespace RotRise.Gameplay
             {
                 var image = GetOrCreateTableCardImage(card);
                 var position = card.Id == board.SearchCitizenId
-                    ? layout.GetLocationPosition(searchSlot) + TableLayout.SearchOffset
+                    ? board.GetSearchCitizenPosition()
                     : card.Position;
 
-                // 보드 재표시 중에도 이동 중인 보상의 현재 좌표 유지
-                if (CanInteractWithCard(card.Id))
+                // 보드 재표시 중에도 이동 연출 좌표 유지
+                if (!HasMotion(rewardMotions, card.Id) && !HasMotion(stackMotions, card.Id))
                 {
                     SetPosition(image.rectTransform, position);
                 }
@@ -244,7 +248,7 @@ namespace RotRise.Gameplay
                 var image = GetOrCreateTableCardImage(card).rectTransform;
                 var duration = RewardTravelDuration + RewardTravelInterval * (index - firstReward);
                 SetPosition(image, origin);
-                rewardMotions.Add(new RewardMotion(card.Id, image, origin, card.Position, duration));
+                rewardMotions.Add(new CardMotion(card.Id, image, origin, card.Position, duration));
             }
         }
 
@@ -253,38 +257,101 @@ namespace RotRise.Gameplay
         internal bool CanInteractWithCard(int cardId)
         {
             // 보이는 위치와 모델의 착지 위치가 일치한 뒤 상호작용 허용
-            foreach (var motion in rewardMotions)
-            {
-                if (motion.CardId == cardId)
-                {
-                    return false;
-                }
-            }
-
-            return true;
+            return !HasMotion(rewardMotions, cardId);
         }
 
 
-        // 보상 카드의 완만한 곡선 이동과 착지 처리
-        internal void AdvanceRewardScatter(float deltaTime)
+        // 놓은 위치와 기존 더미의 화면 위치에서 확정 슬롯까지 이동 시작
+        internal void PlayStackSnap(TableBoard board, int stackId,
+            IReadOnlyList<TableBoard.TableCard> draggedCards, Vector2 releaseDelta)
+        {
+            // 마지막 드래그 표시와 같은 계산으로 놓는 프레임의 좌표 적용
+            foreach (var card in draggedCards)
+            {
+                if (card.Id != board.SearchCitizenId)
+                {
+                    SetPosition(tableCardImages[card.Id].rectTransform, card.Position + releaseDelta);
+                }
+            }
+
+            // 합친 더미에서 위치가 달라지는 카드만 보간
+            foreach (var card in board.TableCards)
+            {
+                if (card.StackId != stackId || card.Id == board.SearchCitizenId)
+                {
+                    continue;
+                }
+
+                var image = tableCardImages[card.Id].rectTransform;
+                var anchored = image.anchoredPosition;
+                var origin = new Vector2(anchored.x, -anchored.y);
+
+                if (origin != card.Position)
+                {
+                    stackMotions.Add(new CardMotion(card.Id, image, origin, card.Position, StackSnapDuration));
+                }
+            }
+        }
+
+
+        // 새 입력이나 비활성화 전에 더미의 화면 위치를 확정 배치에 맞춤
+        internal void FinishStackSnap()
+        {
+            // 입력 판정 좌표와 화면 위치를 먼저 일치시킨 뒤 연출 해제
+            foreach (var motion in stackMotions)
+            {
+                SetPosition(motion.Image, motion.Destination);
+            }
+
+            stackMotions.Clear();
+        }
+
+
+        // 지정한 카드에 진행 중인 화면 이동이 있는지 확인
+        private static bool HasMotion(List<CardMotion> motions, int cardId)
+        {
+            // 카드 식별자로 이동 목록 조회
+            foreach (var motion in motions)
+            {
+                if (motion.CardId == cardId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+
+        // 보상은 호를 그리며 이동하고 더미는 제자리로 감속
+        internal void AdvanceCardMotions(float deltaTime)
+        {
+            // 기존 보상 궤적과 더미의 직선 이동에 같은 감속 적용
+            AdvanceMotions(rewardMotions, deltaTime, RewardArcHeight);
+            AdvanceMotions(stackMotions, deltaTime, 0f);
+        }
+
+
+        // 화면 이동을 전진하고 완료된 카드를 확정 위치에 정렬
+        private static void AdvanceMotions(List<CardMotion> motions, float deltaTime, float arcHeight)
         {
             // 이동이 끝난 항목을 역순 순회 중 제거
-            for (var index = rewardMotions.Count - 1; index >= 0; index--)
+            for (var index = motions.Count - 1; index >= 0; index--)
             {
-                var motion = rewardMotions[index];
+                var motion = motions[index];
                 motion.Elapsed += deltaTime;
 
                 if (motion.Elapsed >= motion.Duration)
                 {
                     SetPosition(motion.Image, motion.Destination);
-                    rewardMotions.RemoveAt(index);
+                    motions.RemoveAt(index);
                     continue;
                 }
 
-                // 출발 직후 퍼지고 착지 직전에 속도가 줄어드는 곡선 보간
+                // 착지 직전에 속도가 줄어드는 보간과 선택적 호 높이 적용
                 var remaining = 1f - motion.Elapsed / motion.Duration;
                 var progress = 1f - remaining * remaining;
-                var lift = Mathf.Sin(progress * Mathf.PI) * RewardArcHeight;
+                var lift = Mathf.Sin(progress * Mathf.PI) * arcHeight;
                 var position = Vector2.Lerp(motion.Origin, motion.Destination, progress) - Vector2.up * lift;
                 SetPosition(motion.Image, position);
             }
@@ -324,11 +391,17 @@ namespace RotRise.Gameplay
 
 
         // 확정 전 드래그 위치와 유효한 슬롯 강조 표시
-        internal void RenderDrag(IReadOnlyList<TableBoard.TableCard> cards, Vector2 delta, int targetSlot, Rect? targetBounds)
+        internal void RenderDrag(IReadOnlyList<TableBoard.TableCard> cards, Vector2 delta, int targetSlot, Rect? targetBounds,
+            int stationaryCitizenId)
         {
             // 집은 카드와 위쪽 카드의 간격 및 그리는 순서 유지
             foreach (var card in cards)
             {
+                if (card.Id == stationaryCitizenId)
+                {
+                    continue;
+                }
+
                 var image = tableCardImages[card.Id];
                 SetPosition(image.rectTransform, card.Position + delta);
                 image.rectTransform.SetAsLastSibling();

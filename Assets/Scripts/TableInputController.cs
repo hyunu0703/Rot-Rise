@@ -119,6 +119,7 @@ namespace RotRise.Gameplay
 
             point.Disable();
             click.Disable();
+            view.FinishStackSnap();
             CancelDrag();
             view.SetVisible(false);
         }
@@ -142,11 +143,11 @@ namespace RotRise.Gameplay
         }
 
 
-        // 같은 프레임의 일차 입력을 수색 시간보다 먼저 처리
+        // 일차와 카드 입력을 반영한 뒤 수색 및 화면 갱신
         private void Update()
         {
             // 새 보상이 생성되기 전에 진행 중인 이동만 전진
-            view.AdvanceRewardScatter(Time.deltaTime);
+            view.AdvanceCardMotions(Time.deltaTime);
 
             // 키 유지 중 재실행 없이 새 입력만 처리
             var keyboard = Keyboard.current;
@@ -160,8 +161,17 @@ namespace RotRise.Gameplay
                 view.RenderBoard(board);
             }
 
-            // 보상 생성 후 같은 프레임의 드래그 화면 복원
-            if (board.TickSearch(Time.deltaTime, out var completedSlot))
+            // 수색 시민을 잡은 동안 레일의 드래그 시작 위치와 진행도 유지
+            var pointer = view.GetBoardPoint(point.ReadValue<Vector2>());
+
+            if (!advancesDay)
+            {
+                UpdatePointer(pointer);
+            }
+
+            var isHoldingSearcher = draggedCards.Count > 0 && draggedCards[0].Id == board.SearchCitizenId;
+
+            if (!isHoldingSearcher && board.TickSearch(Time.deltaTime, out var completedSlot))
             {
                 view.PlayRewardScatter(board.TableCards, completedSlot);
                 view.RenderBoard(board);
@@ -171,15 +181,16 @@ namespace RotRise.Gameplay
                 view.RenderProgress(board.SearchProgress);
             }
 
-            if (!advancesDay)
+            // 보상과 보드 갱신 뒤 현재 드래그를 가장 위에 표시
+            if (isDragging)
             {
-                UpdatePointer();
+                RenderDrag(pointer, isHoldingSearcher);
             }
         }
 
 
         // 마우스 드래그 시작과 이동 및 드롭 요청 처리
-        private void UpdatePointer()
+        private void UpdatePointer(Vector2 pointer)
         {
             var pressed = click.WasPressedThisFrame();
 
@@ -188,11 +199,11 @@ namespace RotRise.Gameplay
                 return;
             }
 
-            // 입력 좌표와 누른 지점의 카드 내부 상대 위치 저장
-            var pointer = view.GetBoardPoint(point.ReadValue<Vector2>());
-
+            // 누른 지점의 카드 내부 상대 위치 저장
             if (pressed && draggedCards.Count == 0)
             {
+                // 확정 위치에서 다음 카드 선택 시작
+                view.FinishStackSnap();
                 var cardId = board.FindDraggableCard(pointer, canInteract);
 
                 if (cardId == 0)
@@ -212,29 +223,36 @@ namespace RotRise.Gameplay
 
             if (click.WasReleasedThisFrame())
             {
-                // 실패 포함 드롭 결과를 모델의 확정 배치로 복원
-                if (isDragging)
+                // 합치기 성공 시에만 놓은 좌표에서 확정 슬롯으로 이동
+                if (isDragging && board.TryDrop(draggedCards, pointer, position, canInteract, out var mergedStackId) &&
+                    mergedStackId != 0)
                 {
-                    board.TryDrop(draggedCards, pointer, position, canInteract);
+                    view.PlayStackSnap(board, mergedStackId, draggedCards, delta);
                 }
 
                 CancelDrag();
-                return;
             }
+        }
 
-            if (isDragging)
-            {
-                var targetSlot = board.FindSearchTarget(first.Id, pointer);
-                var hasStackTarget = board.TryGetStackTarget(draggedCards, pointer, position, canInteract, out _, out var targetBounds);
-                view.RenderDrag(draggedCards, delta, targetSlot >= 0 ? targetSlot : board.SearchSlot, hasStackTarget ? targetBounds : null);
-            }
+
+        // 실제로 놓을 수 있는 장소나 더미와 드래그 위치 표시
+        private void RenderDrag(Vector2 pointer, bool isMovingSearcher)
+        {
+            // 복귀 자리를 포함한 더미를 옮겨도 수색 시민의 화면 위치는 레일에 유지
+            var position = pointer - grabOffset;
+            var delta = position - draggedCards[0].Position;
+            var targetSlot = board.FindSearchTarget(draggedCards, pointer);
+            var hasStackTarget = board.TryGetStackTarget(draggedCards, pointer, position, canInteract, out _, out var targetBounds);
+            var stationaryCitizenId = isMovingSearcher ? 0 : board.SearchCitizenId;
+            view.RenderDrag(draggedCards, delta, targetSlot >= 0 ? targetSlot : board.SearchSlot,
+                hasStackTarget ? targetBounds : null, stationaryCitizenId);
         }
 
 
         // 일시적인 드래그를 해제하고 현재 보드 배치 표시
         private void CancelDrag()
         {
-            // 모델에는 드롭 전 위치가 그대로 유지
+            // 임시 드래그를 지우고 모델의 현재 배치로 표시 갱신
             if (draggedCards.Count > 0)
             {
                 draggedCards.Clear();

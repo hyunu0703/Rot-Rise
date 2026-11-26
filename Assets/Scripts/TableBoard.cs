@@ -34,13 +34,14 @@ namespace RotRise.Gameplay
         }
 
         /// <summary>
-        /// 레일에서 이동해도 유지되는 장소 카드 한 장의 식별자
+        /// 레일에서 이동해도 유지되는 장소 카드의 식별자와 수색 진행 시간
         /// </summary>
         internal sealed class LocationCard
         {
-            // 장소 인스턴스와 공유 설정 참조
+            // 장소 인스턴스와 공유 설정 참조 및 누적 수색 시간
             internal int Id { get; }
             internal LocationDefinition Definition { get; }
+            internal float SearchElapsed { get; set; }
 
 
             // 공유 설정을 참조하는 새 장소 카드 생성
@@ -53,14 +54,13 @@ namespace RotRise.Gameplay
         }
 
         /// <summary>
-        /// 투입 시민과 장소 카드에 묶인 수색 타이머
+        /// 현재 수색에 투입된 시민과 대상 장소 연결
         /// </summary>
         private sealed class Search
         {
-            // 슬롯과 독립적인 작업 대상과 경과 시간
+            // 슬롯과 독립적인 투입 시민과 작업 대상
             internal int CitizenId { get; }
             internal LocationCard Location { get; }
-            internal float Elapsed { get; set; }
 
 
             // 수색 시작 시 두 카드의 식별 범위 고정
@@ -100,7 +100,7 @@ namespace RotRise.Gameplay
         private Search search;
         internal int SearchCitizenId => search?.CitizenId ?? 0;
         internal int SearchSlot => search == null ? -1 : Array.IndexOf(rail, search.Location);
-        internal float SearchProgress => search == null ? 0f : search.Elapsed / searchDuration;
+        internal float SearchProgress => search == null ? 0f : search.Location.SearchElapsed / searchDuration;
 
 
         // 첫날 레일과 시민 카드 준비
@@ -131,12 +131,21 @@ namespace RotRise.Gameplay
         // 포인터 아래에 있는 드래그 가능한 테이블 카드 조회
         internal int FindDraggableCard(Vector2 pointer, Predicate<int> canInteract)
         {
+            // 레일 위에 그려지는 수색 시민을 복귀 위치보다 먼저 확인
+            var searchCitizenId = SearchCitizenId;
+
+            if (searchCitizenId != 0 && new Rect(GetSearchCitizenPosition(), layout.CardSize).Contains(pointer) &&
+                canInteract(searchCitizenId))
+            {
+                return searchCitizenId;
+            }
+
             // 화면에서 앞에 그려지는 카드부터 선택
             for (var index = tableCards.Count - 1; index >= 0; index--)
             {
                 var card = tableCards[index];
 
-                if (card.Id != SearchCitizenId && new Rect(card.Position, layout.CardSize).Contains(pointer) && canInteract(card.Id))
+                if (card.Id != searchCitizenId && new Rect(card.Position, layout.CardSize).Contains(pointer) && canInteract(card.Id))
                 {
                     return card.Id;
                 }
@@ -146,19 +155,34 @@ namespace RotRise.Gameplay
         }
 
 
+        // 레일에 표시되는 수색 시민의 좌표 조회
+        internal Vector2 GetSearchCitizenPosition()
+        {
+            // 화면 표시와 드래그 시작점에 동일한 슬롯 오프셋 사용
+            return layout.GetLocationPosition(SearchSlot) + TableLayout.SearchOffset;
+        }
+
+
         // 집은 카드부터 같은 더미의 위쪽 카드까지 드래그 목록에 복사
         internal void GetDragCards(int cardId, List<TableCard> cards)
         {
             // 확정 배치 순서를 임시 드래그에도 사용
             cards.Clear();
             var firstIndex = FindTableIndex(cardId);
-            var stackId = tableCards[firstIndex].StackId;
+            var first = tableCards[firstIndex];
+
+            // 수색 시민을 잡으면 테이블의 복귀 위치 대신 레일에서 드래그 시작
+            if (cardId == SearchCitizenId)
+            {
+                cards.Add(new TableCard(first.Id, first.Material, GetSearchCitizenPosition(), first.StackId));
+                return;
+            }
 
             for (var index = firstIndex; index < tableCards.Count; index++)
             {
                 var card = tableCards[index];
 
-                if (card.StackId == stackId)
+                if (card.StackId == first.StackId)
                 {
                     cards.Add(card);
                 }
@@ -167,45 +191,31 @@ namespace RotRise.Gameplay
 
 
         // 대상 슬롯의 수색 가능 여부 조회
-        internal int FindSearchTarget(int cardId, Vector2 pointer)
+        internal int FindSearchTarget(IReadOnlyList<TableCard> draggedCards, Vector2 pointer)
         {
-            // 작업 중인 수색과 시민 외 카드 거절
-            var index = FindTableIndex(cardId);
+            // 더미에 소속돼 있어도 실제로 한 장만 집은 시민이면 수색 허용
+            var first = draggedCards[0];
 
-            if (search != null || index < 0 || tableCards[index].Material.HasValue)
+            if (draggedCards.Count != 1 || first.Material.HasValue || (search != null && first.Id != search.CitizenId))
             {
                 return -1;
             }
 
-            // 현재 공개 장소와 독립 시민 확인
+            // 슬롯 안에 놓인 공개 장소만 수색 대상으로 인정
             var slot = FindSlot(pointer);
-            var card = tableCards[index];
-
-            if (slot < 0 || slot >= TableLayout.PreviewSlot || rail[slot] == null || card.StackId != card.Id)
-            {
-                return -1;
-            }
-
-            // 다른 카드를 받치고 있는 시민의 수색 제한
-            for (var next = index + 1; next < tableCards.Count; next++)
-            {
-                if (tableCards[next].StackId == cardId)
-                {
-                    return -1;
-                }
-            }
-
-            return slot;
+            return slot >= 0 && slot < TableLayout.PreviewSlot && rail[slot] != null ? slot : -1;
         }
 
 
-        // 드롭 요청을 수색 또는 카드 더미 배치로 확정
-        internal bool TryDrop(IReadOnlyList<TableCard> draggedCards, Vector2 pointer, Vector2 position, Predicate<int> canInteract)
+        // 드롭을 확정하고 합친 경우 최종 더미 식별자 전달
+        internal bool TryDrop(IReadOnlyList<TableCard> draggedCards, Vector2 pointer, Vector2 position,
+            Predicate<int> canInteract, out int mergedStackId)
         {
             // 드래그 시작 카드의 확정 위치와 더미 소속 조회
+            mergedStackId = 0;
             var first = draggedCards[0];
             var firstIndex = FindTableIndex(first.Id);
-            var targetSlot = FindSearchTarget(first.Id, pointer);
+            var targetSlot = FindSearchTarget(draggedCards, pointer);
 
             if (targetSlot >= 0)
             {
@@ -233,6 +243,12 @@ namespace RotRise.Gameplay
                 return false;
             }
 
+            // 수색 시민을 유효한 테이블 위치에 놓으면 장소에 진행 시간 보존
+            if (first.Id == SearchCitizenId)
+            {
+                search = null;
+            }
+
             // 배치 확정 후 원본에서 이동분과 대상 더미를 제거
             for (var index = tableCards.Count - 1; index >= 0; index--)
             {
@@ -253,6 +269,7 @@ namespace RotRise.Gameplay
                 tableCards.Add(new TableCard(card.Id, card.Material, position + StackStep * index, newStackId));
             }
 
+            mergedStackId = hasTarget ? newStackId : 0;
             return true;
         }
 
@@ -430,9 +447,9 @@ namespace RotRise.Gameplay
                 return false;
             }
 
-            search.Elapsed += deltaTime;
+            search.Location.SearchElapsed += deltaTime;
 
-            if (search.Elapsed < searchDuration)
+            if (search.Location.SearchElapsed < searchDuration)
             {
                 return false;
             }
